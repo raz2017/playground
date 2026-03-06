@@ -55,8 +55,26 @@ struct Sprite {
 	SDL_FRect source_rect;
 	Animation mAnimation;
 	SDL_FlipMode mFlipMode = SDL_FLIP_NONE;
+	float mVelocityX = 0.0f;
+	float mVelocityY = 0.0f;
+	float mGroundY = 800.0f;
+	bool mIsGrounded = true;
+	bool mHasDoubleJump = true;
 
-	bool moving_right = true;
+	static constexpr float kGravity = 2.5f;
+	static constexpr float kJumpForce = -20.0f;
+
+	void Jump() {
+		if (mIsGrounded) {
+			mVelocityY = kJumpForce;
+			mIsGrounded = false;
+			mHasDoubleJump = true;
+		}
+		else if (mHasDoubleJump && mVelocityY < 0) {
+			mVelocityY = kJumpForce;
+			mHasDoubleJump = false;
+		}
+	}
 
 	Sprite(SDL_Renderer* renderer, std::string filename) {
 		SDL_Surface* surface = SDL_LoadPNG(filename.c_str());
@@ -96,25 +114,28 @@ struct Sprite {
 	}
 
 	void Update() {
-		if (destination_rect.x > 500) {
-			moving_right = false;
-			mFlipMode = SDL_FLIP_HORIZONTAL;
+		if (!mIsGrounded) mVelocityY += kGravity;
+
+		destination_rect.x += mVelocityX;
+		destination_rect.y += mVelocityY;
+
+		if (destination_rect.x < 0) destination_rect.x = 0;
+		if (destination_rect.x > 976) destination_rect.x = 976;
+
+		if (destination_rect.y >= mGroundY) {
+			destination_rect.y = mGroundY;
+			mVelocityY = 0.0f;
+			mIsGrounded = true;
+			mHasDoubleJump = true;
 		}
 
-		if (destination_rect.x <= 0) {
-			moving_right = true;
-			mFlipMode = SDL_FLIP_NONE;
-		}
-
-		if (moving_right) {
-			destination_rect.x += 0.1f;
-		}
-		else {
-			destination_rect.x -= 0.1f;
-		}
+		if (mVelocityX > 0) mFlipMode = SDL_FLIP_NONE;
+		else if (mVelocityX < 0) mFlipMode = SDL_FLIP_HORIZONTAL;
 
 		source_rect = mAnimation.GetFrameAsSDL_FRect();
-		mAnimation.Loop_Animation();
+		if (mVelocityX != 0.0f || mVelocityY != 0.0f) {
+			mAnimation.Loop_Animation();
+		}
 	}
 
 	void Render(SDL_Renderer* renderer) {
@@ -135,6 +156,8 @@ struct SDLApplication {
 	Sprite* mSprite;
 
 	SDL_Texture* mTexture;
+	SDL_Gamepad* mGamepad = nullptr;
+	bool mJumpPressed = false;
 	//Particles mParticlesSystem{ 10000 };
 	bool running = true;
 	bool isFullScreen = false;
@@ -143,7 +166,7 @@ struct SDLApplication {
 	//A test surface
 
 	SDLApplication(const char* title) {
-		SDL_Init(SDL_INIT_VIDEO);
+		SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);
 		mWindow = SDL_CreateWindow(title, 1000, 1000, SDL_WINDOW_RESIZABLE);
 		//mSurface = SDL_LoadPNG("data/bg/bg_layer1.png");
 		//if (mSurface == nullptr) {
@@ -167,11 +190,12 @@ struct SDLApplication {
 
 	void SetupSceneData() {
 		mSprite = new Sprite{ mRenderer, "data/mario/mario.png" };
-		mSprite->SetSpritePosition(50, 25);
+		mSprite->SetSpritePosition(50, 800);
 		mSprite->SetSpriteDimensions(32, 28);
 	}
 
 	~SDLApplication() {
+		if (mGamepad) SDL_CloseGamepad(mGamepad);
 		SDL_Quit();
 		SDL_DestroyTexture(mTexture);
 		SDL_DestroyRenderer(mRenderer);
@@ -211,6 +235,24 @@ struct SDLApplication {
 					debug_mode = !debug_mode;
 				}
 			}
+			else if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+				if (event.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) {
+					mJumpPressed = true;
+				}
+			}
+			else if (event.type == SDL_EVENT_GAMEPAD_ADDED) {
+				if (!mGamepad) {
+					mGamepad = SDL_OpenGamepad(event.gdevice.which);
+					SDL_Log("Gamepad connected: %s", SDL_GetGamepadName(mGamepad));
+				}
+			}
+			else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
+				if (mGamepad && SDL_GetGamepadID(mGamepad) == event.gdevice.which) {
+					SDL_CloseGamepad(mGamepad);
+					mGamepad = nullptr;
+					SDL_Log("Gamepad disconnected");
+				}
+			}
 			else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
 				float x, y;
 				SDL_MouseButtonFlags mouse = SDL_GetMouseState(&x, &y);
@@ -221,6 +263,27 @@ struct SDLApplication {
 	}
 
 	void Update() {
+		const float speed = 3.0f;
+		const float deadzone = 8000.0f;
+		float vx = 0.0f, vy = 0.0f;
+
+		if (mGamepad) {
+			float axisX = (float)SDL_GetGamepadAxis(mGamepad, SDL_GAMEPAD_AXIS_LEFTX);
+			float axisY = (float)SDL_GetGamepadAxis(mGamepad, SDL_GAMEPAD_AXIS_LEFTY);
+			if (SDL_fabsf(axisX) > deadzone) vx = (axisX / 32767.0f) * speed;
+			if (SDL_fabsf(axisY) > deadzone) vy = (axisY / 32767.0f) * speed;
+
+			if (SDL_GetGamepadButton(mGamepad, SDL_GAMEPAD_BUTTON_DPAD_LEFT))  vx = -speed;
+			if (SDL_GetGamepadButton(mGamepad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) vx = speed;
+			if (SDL_GetGamepadButton(mGamepad, SDL_GAMEPAD_BUTTON_DPAD_UP))    vy = -speed;
+			if (SDL_GetGamepadButton(mGamepad, SDL_GAMEPAD_BUTTON_DPAD_DOWN))  vy = speed;
+		}
+
+		mSprite->mVelocityX = vx;
+		if (mJumpPressed) {
+			mSprite->Jump();
+			mJumpPressed = false;
+		}
 		mSprite->Update();
 	}
 
