@@ -150,14 +150,57 @@ struct Sprite {
 	}
 };
 
+struct BgLayer {
+	SDL_Texture* mTexture = nullptr;
+	float mScrollSpeed;
+
+	BgLayer(SDL_Renderer* renderer, const std::string& filename, float scrollSpeed, bool colorKey = false)
+		: mScrollSpeed(scrollSpeed) {
+		SDL_Surface* surface = SDL_LoadPNG(filename.c_str());
+		if (colorKey) {
+			const SDL_PixelFormatDetails* details = SDL_GetPixelFormatDetails(surface->format);
+			SDL_Palette* palette = SDL_GetSurfacePalette(surface);
+			Uint32 key = SDL_MapRGB(details, palette, 255, 255, 255);
+			SDL_SetSurfaceColorKey(surface, true, key);
+		}
+		mTexture = SDL_CreateTextureFromSurface(renderer, surface);
+		SDL_DestroySurface(surface);
+	}
+
+	~BgLayer() {
+		SDL_DestroyTexture(mTexture);
+	}
+
+	void Render(SDL_Renderer* renderer, float playerX) {
+		const float screenW = 1000.0f;
+		const float screenH = 1000.0f;
+		float offset = SDL_fmodf(playerX * mScrollSpeed, screenW);
+		if (offset < 0.0f) offset += screenW;
+
+		SDL_FRect dst1 = { -offset, 0.0f, screenW, screenH };
+		SDL_FRect dst2 = { screenW - offset, 0.0f, screenW, screenH };
+
+		SDL_RenderTexture(renderer, mTexture, nullptr, &dst1);
+		SDL_RenderTexture(renderer, mTexture, nullptr, &dst2);
+	}
+};
+
+struct Star {
+	float x, y;
+	bool active = true;
+};
+
 struct SDLApplication {
 	SDL_Window* mWindow;
 	SDL_Renderer* mRenderer;
 	Sprite* mSprite;
 
 	SDL_Texture* mTexture;
+	std::vector<BgLayer*> mBgLayers;
+	float mScrollX = 0.0f;
 	SDL_Gamepad* mGamepad = nullptr;
 	bool mJumpPressed = false;
+	std::vector<Star> mStars;
 	//Particles mParticlesSystem{ 10000 };
 	bool running = true;
 	bool isFullScreen = false;
@@ -189,13 +232,23 @@ struct SDLApplication {
 	}
 
 	void SetupSceneData() {
+		mBgLayers.push_back(new BgLayer(mRenderer, "data/bg/bg_layer1.png", 0.05f, false));
+		mBgLayers.push_back(new BgLayer(mRenderer, "data/bg/bg_layer2.png", 0.15f, true));
+		mBgLayers.push_back(new BgLayer(mRenderer, "data/bg/bg_layer3.png", 0.3f,  true));
+		mBgLayers.push_back(new BgLayer(mRenderer, "data/bg/bg_layer4.png", 0.5f,  true));
+
 		mSprite = new Sprite{ mRenderer, "data/mario/mario.png" };
 		mSprite->SetSpritePosition(50, 800);
 		mSprite->SetSpriteDimensions(32, 28);
+
+		for (int i = 0; i < 20; i++) {
+			mStars.push_back({ 30.0f + i * 50.0f, 730.0f, true });
+		}
 	}
 
 	~SDLApplication() {
 		if (mGamepad) SDL_CloseGamepad(mGamepad);
+		for (auto* layer : mBgLayers) delete layer;
 		SDL_Quit();
 		SDL_DestroyTexture(mTexture);
 		SDL_DestroyRenderer(mRenderer);
@@ -279,23 +332,56 @@ struct SDLApplication {
 			if (SDL_GetGamepadButton(mGamepad, SDL_GAMEPAD_BUTTON_DPAD_DOWN))  vy = speed;
 		}
 
+		for (auto& star : mStars) {
+			if (!star.active) continue;
+			float sx = star.x - mScrollX;
+			SDL_FRect& s = mSprite->destination_rect;
+			if (sx < s.x + s.w && sx + 8.0f > s.x &&
+				star.y < s.y + s.h && star.y + 8.0f > s.y) {
+				star.active = false;
+			}
+		}
+
+		mScrollX += vx;
 		mSprite->mVelocityX = vx;
 		if (mJumpPressed) {
 			mSprite->Jump();
 			mJumpPressed = false;
 		}
 		mSprite->Update();
+
+		const float leftBuffer  = 200.0f;
+		const float rightBuffer = 700.0f;
+		float& px = mSprite->destination_rect.x;
+		if (px > rightBuffer) {
+			mScrollX += px - rightBuffer;
+			px = rightBuffer;
+		} else if (px < leftBuffer) {
+			mScrollX += px - leftBuffer;
+			px = leftBuffer;
+		}
 	}
 
 	void Render() {
 		SDL_SetRenderDrawColor(mRenderer, 0x00, 0xAA, 0xFF, 0xFF);
 		SDL_RenderClear(mRenderer);
 
+		for (auto* layer : mBgLayers) {
+			layer->Render(mRenderer, mScrollX);
+		}
+
 		if (debug_mode) {
 			SDL_SetRenderDrawColor(mRenderer, 0x00, 0x00, 0x00, 0xFF);
 			SDL_RenderDebugText(mRenderer, 0.0f, 0.0f, "Debug mode");
 		}
 
+
+		SDL_SetRenderDrawColor(mRenderer, 0xFF, 0xFF, 0x00, 0xFF);
+		for (const auto& star : mStars) {
+			if (star.active) {
+				SDL_RenderDebugText(mRenderer, star.x - mScrollX, star.y, "*");
+			}
+		}
 
 		mSprite->Render(mRenderer);
 		SDL_RenderPresent(mRenderer);
